@@ -1,15 +1,18 @@
 name: Publish to PyPI
 
+# DISABLED for now: the automatic triggers below are commented out, so this
+# workflow only runs when started manually (workflow_dispatch).
 on:
-  # On every push to main, push to Test PyPI
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
-  # On new releases, push to PyPI
-  release:
-    types: [published]
-
+  # # On every push to main, push to Test PyPI
+  # push:
+  #   branches:
+  #     - main
+  #
+  # # On new releases, push to PyPI
+  # release:
+  #   types: [published]
 
 jobs:
   build:
@@ -104,7 +107,7 @@ jobs:
         esac
 
         # Determine built package version
-        pkg_version=$(awk '{ if ($1 == "Version:") print $2 }' <staticx.egg-info/PKG-INFO)
+        pkg_version=$(awk '{ if ($1 == "Version:") print $2 }' <staticx_est.egg-info/PKG-INFO)
         echo "Package version: $pkg_version"
         echo "PKG_VERSION=$pkg_version" >> $GITHUB_OUTPUT
 

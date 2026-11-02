@@ -1,5 +1,5 @@
 [project]
-name = "staticx"
+name = "staticx-est"
 dynamic = ["version"]
 
 authors = [
@@ -33,8 +33,8 @@ sx-extract = "staticx.extract:main"
 
 [project.urls]
 documentation = "https://staticx.readthedocs.io/"
-repository = "https://github.com/JonathonReinhart/staticx"
-changelog = "https://github.com/JonathonReinhart/staticx/blob/main/CHANGELOG.md"
+repository = "https://github.com/Nordix/staticx"
+changelog = "https://github.com/Nordix/staticx/blob/staticx-est/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

@@ -9,7 +9,7 @@ from pathlib import Path
 PACKAGEPATH = Path(__file__).absolute().parent
 PROJPATH = PACKAGEPATH.parent
 
-DIST_SPEC = "staticx"
+DIST_SPEC = "staticx-est"
 
 # Base version, which will be augmented with Git information
 BASE_VERSION = "0.14.2"
