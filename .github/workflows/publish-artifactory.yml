@@ -1,21 +1,45 @@
-name: Publish to PyPI
+name: Publish to Artifactory
 
-# DISABLED for now: the automatic triggers below are commented out, so this
-# workflow only runs when started manually (workflow_dispatch).
+# Publishes to Nordix Artifactory, never to PyPI or Test PyPI.
+# Triggers:
+#   - push to staticx-est: publishes a snapshot to
+#       allies/staticx-est/snapshots/<version>/
+#   - workflow_dispatch (from staticx-est): same as above, for manual runs
+#   - release: publishes to allies/staticx-est/<version>/
+#
+# Versioning:
+#   The published version is derived from BASE_VERSION in staticx/version.py:
+#     - release:  <BASE_VERSION>              e.g. 0.14.2.1
+#     - snapshot: <BASE_VERSION>.<run_id>     e.g. 0.14.2.1.41820990636
+#   BASE_VERSION is NOT bumped automatically. 
+#   Bump it by hand (0.14.2.1 -> 0.14.2.2 -> ...) BEFORE each release and before pushing to staticx-est when you want snapshots to be named after the new version.
+#   Otherwise the new artifacts will be published under the old version name.
+#   BASE_VERSION must be a valid PEP 440 version (numbers only)
+#   The git tag must be "v" + BASE_VERSION (e.g. v0.14.2.1) and must exist before any build runs or version.py fails with "Git revision different from base version".
+#
+#   Bumping (create tag after bumping version but push them at the same time):
+#     1. Edit BASE_VERSION in staticx/version.py and commit it.
+#     2. Tag that same commit:  git tag v<BASE_VERSION>
+#     3. Push the branch and the tag together:
+#          git push origin <branch> v<BASE_VERSION>
+#     4. Merge the PR with a merge commit (not squash/rebase), so the tag stays reachable from staticx-est.
+#     5. To release, publish a GitHub release on the existing tag.
 on:
   workflow_dispatch:
 
-  # # On every push to main, push to Test PyPI
-  # push:
-  #   branches:
-  #     - main
-  #
-  # # On new releases, push to PyPI
-  # release:
-  #   types: [published]
+  # On every push to staticx-est, push a snapshot to Artifactory
+  push:
+    branches:
+      - staticx-est
+
+  # On new releases, push a release to Artifactory
+  release:
+    types: [published]
+
 
 jobs:
   build:
+    if: ${{ github.repository == 'Nordix/staticx' }}
     runs-on: ubuntu-latest
 
     # Map a step output to a job output
@@ -48,7 +72,7 @@ jobs:
       env:
         BOOTLOADER_CC: /usr/bin/musl-gcc
       run: |
-        # For 'main' branch builds, set append the run ID to the version
+        # For 'staticx-est' branch builds, set append the run ID to the version
         if [ "${{ github.ref_type }}" == "branch" ]; then
           export CI_VERSION_BUILD_NUMBER=${{ github.run_id }}
         fi
@@ -73,12 +97,12 @@ jobs:
         echo "github.ref=\"${{ github.ref }}\""
 
         case "${{ github.event_name }}" in
-          push)
-            echo "Triggered by push to ${{ github.ref }}"
+          push|workflow_dispatch)
+            echo "Triggered by ${{ github.event_name }} on ${{ github.ref }}"
             if [ "${{ github.ref_type }}" == "branch" ]; then
-              if [ "${{ github.ref_name }}" == "main" ]; then
-                echo "Will deploy to TestPyPI"
-                echo "ENV_NAME=TestPyPI" >> $GITHUB_OUTPUT
+              if [ "${{ github.ref_name }}" == "staticx-est" ]; then
+                echo "Will deploy snapshot to Artifactory"
+                echo "ENV_NAME=Artifactory-Snapshot" >> $GITHUB_OUTPUT
               else
                 echo "Unexpected ref_name: \"${{ github.ref_name }}\""
                 exit 6
@@ -92,8 +116,8 @@ jobs:
           release)
             echo "Triggered by release to ${{ github.ref }}"
             if [ "${{ github.ref_type }}" == "tag" ]; then
-              echo "Will deploy to PyPI"
-              echo "ENV_NAME=PyPI" >> $GITHUB_OUTPUT
+              echo "Will deploy release to Artifactory"
+              echo "ENV_NAME=Artifactory-Release" >> $GITHUB_OUTPUT
             else
               echo "Unexpected ref_type: \"${{ github.ref_type}}\""
               exit 6
@@ -112,15 +136,14 @@ jobs:
         echo "PKG_VERSION=$pkg_version" >> $GITHUB_OUTPUT
 
 
-  pypi-publish:
-    name: Upload release to PyPI
+  artifactory-publish:
+    name: Upload ${{ needs.build.outputs.ENV_NAME }} to Artifactory
+    if: ${{ github.repository == 'Nordix/staticx' }}
     needs: [build]
     runs-on: ubuntu-latest
     environment:
       name: ${{ needs.build.outputs.ENV_NAME }}
-      url: ${{ format('{0}{1}', vars.PROJECT_URL, needs.build.outputs.PKG_VERSION) }}  # from environment
-    permissions:
-      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+      url: https://artifactory.nordix.org/ui/repos/tree/General/allies
     steps:
     - name: Download artifacts
       uses: actions/download-artifact@v8
@@ -128,8 +151,35 @@ jobs:
         name: python-dist
         path: dist/
 
+    # 'allies' is a Generic Artifactory repository (not a PyPI index), so the
+    # files are uploaded directly with HTTP PUT rather than with twine.
     - name: Publish
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        print-hash: true
-        repository-url: ${{ vars.UPLOAD_URL }}  # from environment
+      env:
+        ARTIFACTORY_URL: https://artifactory.nordix.org/artifactory/allies
+        ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+        PKG_VERSION: ${{ needs.build.outputs.PKG_VERSION }}
+        ENV_NAME: ${{ needs.build.outputs.ENV_NAME }}
+      run: |
+        # Snapshots go under staticx-est/snapshots/, releases under staticx-est/
+        case "$ENV_NAME" in
+          Artifactory-Snapshot) base="staticx-est/snapshots/$PKG_VERSION" ;;
+          Artifactory-Release)  base="staticx-est/$PKG_VERSION" ;;
+          *)
+            echo "Unexpected environment: \"$ENV_NAME\""
+            exit 6
+            ;;
+        esac
+
+        for f in dist/*; do
+          name=$(basename "$f")
+          sha256=$(sha256sum "$f" | awk '{ print $1 }')
+          target="$ARTIFACTORY_URL/$base/$name"
+          echo "Uploading $name (sha256: $sha256)"
+          echo "  -> $target"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $ARTIFACTORY_TOKEN" \
+            --header "X-Checksum-Sha256: $sha256" \
+            --upload-file "$f" \
+            "$target"
+          echo
+        done
